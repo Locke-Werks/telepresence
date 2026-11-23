@@ -1,2 +1,5 @@
 /target
 .reliquary-project
+drivers/**/build/
+*.user
+Users*scratchpad*

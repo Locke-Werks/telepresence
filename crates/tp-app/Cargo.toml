@@ -4,8 +4,35 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "tp_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "telepresence"
 path = "src/main.rs"
 
+[features]
+default = ["gui"]
+gui = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-lib", "dep:cxx-qt-build"]
+
 [dependencies]
+tp-proto = { path = "../tp-proto" }
+tp-media = { path = "../tp-media" }
+tp-discovery = { path = "../tp-discovery" }
+tp-sink = { path = "../tp-sink" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio-util = "0.7"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+anyhow = "1"
+cxx = { version = "1.0.205", optional = true }
+cxx-qt = { version = "0.10.0", optional = true }
+cxx-qt-lib = { version = "0.10.0", features = ["qt_gui", "qt_qml", "qt_quickcontrols"], optional = true }
+
+[build-dependencies]
+cxx-qt-build = { version = "0.10.0", optional = true }

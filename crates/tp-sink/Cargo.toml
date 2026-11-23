@@ -3,5 +3,17 @@ name = "tp-sink"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Shared-memory video and audio transport between the TelePresence Receiver and its virtual device drivers"
 
 [dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Memory",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
