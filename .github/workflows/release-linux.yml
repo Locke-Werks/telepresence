@@ -1,0 +1,60 @@
+name: release-linux
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to stamp into the packages (leading v is dropped)
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to stamp into the packages (empty reads Cargo.toml)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    # noble is the oldest Ubuntu with GStreamer 1.24, which gstreamer-rs v1_24 needs.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+          # build.sh keeps its own target dir so other platforms' builds do not collide.
+          workspaces: ". -> target/linux"
+
+      - name: Build .deb and AppImage
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bash packaging/linux/build.sh
+
+      - name: Inspect packages
+        run: |
+          dpkg-deb --info dist/linux/*.deb
+          dpkg-deb --contents dist/linux/*.deb
+
+      - name: Smoke test AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          app="$(ls dist/linux/*.AppImage)"
+          "$app" --version
+          "$app" devices || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/linux/*.deb
+            dist/linux/*.AppImage
+          if-no-files-found: error

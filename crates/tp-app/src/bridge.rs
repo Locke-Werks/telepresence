@@ -58,7 +58,39 @@ pub mod qobject {
         /// Negotiated video as "WxH @ N fps", empty when idle.
         #[qproperty(QString, video_format)]
         #[qproperty(QString, error)]
+        /// Updater phase: "" (nothing to show), "checking", "uptodate",
+        /// "available", "downloading", "waiting" (held for a live stream),
+        /// "applying", "manual" (newer version, install it by hand),
+        /// "notice" or "error".
+        #[qproperty(QString, update_state)]
+        #[qproperty(QString, update_version)]
+        /// 0..1 while downloading; -1 when the size is unknown.
+        #[qproperty(f64, update_progress)]
+        #[qproperty(QString, update_message)]
+        /// Release page, for installs that cannot update themselves.
+        #[qproperty(QString, update_url)]
+        #[qproperty(bool, auto_update_check)]
         type Controller = super::ControllerRust;
+
+        /// Asks GitHub now, regardless of when the last check ran.
+        #[qinvokable]
+        fn check_for_updates(self: Pin<&mut Controller>);
+
+        /// Downloads, verifies and applies the offered version, or arms it to
+        /// do so when the current stream ends.
+        #[qinvokable]
+        fn install_update(self: Pin<&mut Controller>);
+
+        /// Hides the banner until the next check.
+        #[qinvokable]
+        fn later_update(self: Pin<&mut Controller>);
+
+        /// Stops automatic checks from offering this version again.
+        #[qinvokable]
+        fn skip_update(self: Pin<&mut Controller>);
+
+        #[qinvokable]
+        fn set_auto_update(self: Pin<&mut Controller>, on: bool);
 
         /// Starts device enumeration and LAN browsing. Called once from QML.
         #[qinvokable]
@@ -148,6 +180,24 @@ pub struct ControllerRust {
     cancel: Option<CancellationToken>,
     browser: Option<CancellationToken>,
     seen: Vec<PeerInfo>,
+    update_state: QString,
+    update_version: QString,
+    update_progress: f64,
+    update_message: QString,
+    update_url: QString,
+    auto_update_check: bool,
+    updates: Updates,
+}
+
+#[derive(Default)]
+struct Updates {
+    install: Option<crate::update::InstallKind>,
+    release: Option<crate::update::Release>,
+    package: Option<crate::update::Package>,
+    /// A verified download waiting to be applied.
+    file: Option<std::path::PathBuf>,
+    gate: crate::update::ApplyGate,
+    busy: bool,
 }
 
 impl Default for ControllerRust {
@@ -178,6 +228,13 @@ impl Default for ControllerRust {
             cancel: None,
             browser: None,
             seen: Vec::new(),
+            update_state: QString::default(),
+            update_version: QString::default(),
+            update_progress: 0.0,
+            update_message: QString::default(),
+            update_url: QString::default(),
+            auto_update_check: true,
+            updates: Updates::default(),
         }
     }
 }
@@ -218,7 +275,8 @@ impl qobject::Controller {
         let (tx, rx) = mpsc::unbounded_channel();
         crate::sender::spawn_browser(tx, cancel);
         // Generation 0 is never a session generation, so these are not filtered.
-        self.pump(rx, None);
+        self.as_mut().pump(rx, None);
+        self.startup_update_check();
     }
 
     pub fn refresh_devices(self: Pin<&mut Self>) {
@@ -438,6 +496,8 @@ impl qobject::Controller {
         self.as_mut().set_level(0.0);
         qobject::clear_video();
         self.as_mut().set_video_format(QString::default());
+        // Every way a stream ends passes through here.
+        self.as_mut().update_stream_changed();
     }
 
     fn publish_saved(mut self: Pin<&mut Self>) {
@@ -565,6 +625,261 @@ fn finish(qt: cxx_qt::CxxQtThread<qobject::Controller>, generation: u64, res: an
             }
         }
     });
+}
+
+// ----------------------------------------------------------------- updates
+
+use crate::update::{self, Applied, CheckResult, GateAction, UpdateSettings};
+
+impl qobject::Controller {
+    fn startup_update_check(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().updates.install = Some(update::detect_install());
+        let s = UpdateSettings::load(&crate::gui::config_dir());
+        self.as_mut().set_auto_update_check(s.auto_check);
+        if s.due(update::now_secs()) {
+            self.run_check(false);
+        }
+    }
+
+    pub fn check_for_updates(self: Pin<&mut Self>) {
+        self.run_check(true);
+    }
+
+    pub fn set_auto_update(mut self: Pin<&mut Self>, on: bool) {
+        let dir = crate::gui::config_dir();
+        let mut s = UpdateSettings::load(&dir);
+        s.auto_check = on;
+        if let Err(e) = s.save(&dir) {
+            tracing::warn!("saving update settings: {e:#}");
+        }
+        self.as_mut().set_auto_update_check(on);
+    }
+
+    pub fn later_update(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().updates.gate.cancel();
+        if !self.updates.busy {
+            self.as_mut().set_update_state(QString::default());
+        }
+    }
+
+    pub fn skip_update(self: Pin<&mut Self>) {
+        let dir = crate::gui::config_dir();
+        let mut s = UpdateSettings::load(&dir);
+        s.skipped = Some(self.update_version.to_string());
+        if let Err(e) = s.save(&dir) {
+            tracing::warn!("saving update settings: {e:#}");
+        }
+        self.later_update();
+    }
+
+    /// A peer is connected: the one state an update must never interrupt.
+    fn streaming(&self) -> bool {
+        !self.peer.is_empty()
+    }
+
+    fn run_check(mut self: Pin<&mut Self>, manual: bool) {
+        if self.updates.busy || self.updates.gate.armed() {
+            return;
+        }
+        if manual {
+            self.as_mut().set_update_state(qs("checking"));
+            self.as_mut().set_update_message(qs("Checking for updates"));
+        }
+        let qt = self.qt_thread();
+        let dir = crate::gui::config_dir();
+        crate::gui::runtime().spawn(async move {
+            let mut st = UpdateSettings::load(&dir);
+            let res = match update::Updater::from_env() {
+                Ok(u) => u.check(&mut st, &update::current_version()).await,
+                Err(e) => Err(e),
+            };
+            // Reload before saving so a toggle made during the request survives.
+            let mut fresh = UpdateSettings::load(&dir);
+            (fresh.etag, fresh.cached, fresh.last_check) = (st.etag, st.cached, st.last_check);
+            if let Err(e) = fresh.save(&dir) {
+                tracing::warn!("saving update settings: {e:#}");
+            }
+            let skipped = fresh.skipped;
+            let _ = qt.queue(move |c| c.check_done(res, manual, skipped));
+        });
+    }
+
+    fn check_done(mut self: Pin<&mut Self>, res: anyhow::Result<CheckResult>, manual: bool, skipped: Option<String>) {
+        let cur = update::current_version();
+        match res {
+            Ok(CheckResult::Available(r)) => {
+                let ver = r.version.to_string();
+                if !manual && skipped.as_deref() == Some(ver.as_str()) {
+                    self.as_mut().set_update_state(QString::default());
+                    return;
+                }
+                let install = self.updates.install.clone().unwrap_or(update::InstallKind::Unknown);
+                let writable = match &install {
+                    update::InstallKind::MacBundle(b) => update::bundle_writable(b),
+                    _ => true,
+                };
+                let arch = std::env::consts::ARCH;
+                let package = update::package_for(&install, writable);
+                let asset = package.and_then(|p| update::select_asset(&r, p, arch)).map(|a| a.name.clone());
+                let applies = install.can_apply() && asset.is_some();
+                let msg = match (&install, &asset) {
+                    _ if applies => String::new(),
+                    (update::InstallKind::Dev, _) => "Development build: updates are shown, not installed.".into(),
+                    (update::InstallKind::Deb, Some(a)) => {
+                        format!("Installed from a package: download {a} from the release page and install it.")
+                    }
+                    _ => "Download it from the release page.".into(),
+                };
+                self.as_mut().set_update_version(qs(&ver));
+                self.as_mut().set_update_url(qs(&r.html_url));
+                self.as_mut().set_update_message(qs(&msg));
+                let u = &mut self.as_mut().rust_mut().updates;
+                // A new release replaces anything downloaded for an older one.
+                if u.release.as_ref().is_none_or(|old| old.version != r.version) {
+                    u.file = None;
+                }
+                u.package = package;
+                u.release = Some(r);
+                self.as_mut().set_update_state(qs(if applies { "available" } else { "manual" }));
+            }
+            Ok(CheckResult::UpToDate) => {
+                let state = if manual { "uptodate" } else { "" };
+                self.as_mut().set_update_message(qs(&format!("TelePresence {cur} is up to date")));
+                self.as_mut().set_update_state(qs(state));
+            }
+            Ok(CheckResult::RateLimited { reset }) => {
+                tracing::info!("update check rate limited until {reset:?}");
+                if manual {
+                    let mins = reset.map(|r| r.saturating_sub(update::now_secs()).div_ceil(60).max(1));
+                    let when = mins.map(|m| format!(" in {m} min")).unwrap_or_else(|| " later".into());
+                    self.as_mut()
+                        .set_update_message(qs(&format!("GitHub is limiting update checks. Try again{when}.")));
+                    self.as_mut().set_update_state(qs("notice"));
+                } else {
+                    self.as_mut().set_update_state(QString::default());
+                }
+            }
+            Err(e) => {
+                tracing::warn!("update check failed: {e:#}");
+                if manual {
+                    self.as_mut().set_update_message(qs(&format!("Update check failed: {e:#}")));
+                    self.as_mut().set_update_state(qs("error"));
+                } else {
+                    self.as_mut().set_update_state(QString::default());
+                }
+            }
+        }
+    }
+
+    pub fn install_update(mut self: Pin<&mut Self>) {
+        if self.updates.busy || self.updates.release.is_none() {
+            return;
+        }
+        let streaming = self.streaming();
+        match self.as_mut().rust_mut().updates.gate.request(streaming) {
+            GateAction::Wait => self.as_mut().set_waiting(),
+            GateAction::Proceed => self.proceed_update(),
+        }
+    }
+
+    fn set_waiting(mut self: Pin<&mut Self>) {
+        self.as_mut().set_update_message(qs("Installs when the stream ends."));
+        self.as_mut().set_update_state(qs("waiting"));
+    }
+
+    fn update_stream_changed(mut self: Pin<&mut Self>) {
+        let streaming = self.streaming();
+        if self.as_mut().rust_mut().updates.gate.stream_changed(streaming) == GateAction::Proceed {
+            self.proceed_update();
+        }
+    }
+
+    /// Applies a download already on hand, or fetches one first.
+    fn proceed_update(mut self: Pin<&mut Self>) {
+        if let Some(file) = self.updates.file.clone() {
+            self.apply_update(file);
+            return;
+        }
+        let u = &self.updates;
+        let (Some(rel), Some(pkg)) = (u.release.clone(), u.package) else { return };
+        let Some(asset) = update::select_asset(&rel, pkg, std::env::consts::ARCH).cloned() else { return };
+        self.as_mut().rust_mut().updates.busy = true;
+        self.as_mut().set_update_progress(0.0);
+        self.as_mut().set_update_message(qs(&format!("Downloading {}", asset.name)));
+        self.as_mut().set_update_state(qs("downloading"));
+        let qt = self.qt_thread();
+        crate::gui::runtime().spawn(async move {
+            let dir = update::download_dir(&rel.version);
+            let qt_p = qt.clone();
+            let mut last = -1i64;
+            let res = match update::Updater::from_env() {
+                Ok(u) => {
+                    u.download(&rel, &asset, &dir, |got, total| {
+                        // Queue at most one update per percent, not one per chunk.
+                        let frac = if total > 0 { got as f64 / total as f64 } else { -1.0 };
+                        let step = (frac * 100.0) as i64;
+                        if step != last {
+                            last = step;
+                            let _ = qt_p.queue(move |c| c.set_update_progress(frac));
+                        }
+                    })
+                    .await
+                }
+                Err(e) => Err(e),
+            };
+            let _ = qt.queue(move |c| c.download_done(res));
+        });
+    }
+
+    fn download_done(mut self: Pin<&mut Self>, res: anyhow::Result<std::path::PathBuf>) {
+        self.as_mut().rust_mut().updates.busy = false;
+        match res {
+            Ok(file) => {
+                self.as_mut().rust_mut().updates.file = Some(file.clone());
+                // A stream may have started while the file came down.
+                let streaming = self.streaming();
+                match self.as_mut().rust_mut().updates.gate.request(streaming) {
+                    GateAction::Wait => self.set_waiting(),
+                    GateAction::Proceed => self.apply_update(file),
+                }
+            }
+            Err(e) => {
+                tracing::warn!("update download failed: {e:#}");
+                self.as_mut().set_update_message(qs(&format!("Update failed: {e:#}")));
+                self.as_mut().set_update_state(qs("error"));
+            }
+        }
+    }
+
+    fn apply_update(mut self: Pin<&mut Self>, file: std::path::PathBuf) {
+        let Some(install) = self.updates.install.clone() else { return };
+        self.as_mut().set_update_message(qs("Installing"));
+        self.as_mut().set_update_state(qs("applying"));
+        match update::apply(&install, &file) {
+            Ok(Applied::Exit) => {
+                tracing::info!("update handed off, exiting");
+                self.as_mut().stop();
+                if let Some(b) = self.as_mut().rust_mut().browser.take() {
+                    b.cancel();
+                }
+                // Give the cancelled tasks a moment to release the virtual
+                // devices before the process goes.
+                crate::gui::runtime().spawn(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    std::process::exit(0);
+                });
+            }
+            Ok(Applied::Handoff(msg)) => {
+                self.as_mut().set_update_message(qs(&msg));
+                self.as_mut().set_update_state(qs("manual"));
+            }
+            Err(e) => {
+                tracing::warn!("applying update failed: {e:#}");
+                self.as_mut().set_update_message(qs(&format!("Update failed: {e:#}")));
+                self.as_mut().set_update_state(qs("error"));
+            }
+        }
+    }
 }
 
 /// "native" (or anything unparsable) is (None, None); "1920x1080@30" pins both.

@@ -16,6 +16,7 @@ pub mod receiver;
 pub mod sender;
 pub mod sink;
 pub mod store;
+pub mod update;
 
 pub use events::{Event, PeerInfo, StatsSnapshot};
 pub use receiver::{AudioOut, ReceiverConfig, run_receiver};

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TelePresence
+Comment=Camera and microphone over the LAN
+Exec=telepresence
+Icon=telepresence
+Terminal=false
+Categories=AudioVideo;Video;Network;
+Keywords=camera;webcam;microphone;stream;
+StartupWMClass=telepresence

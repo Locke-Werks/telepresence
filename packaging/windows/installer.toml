@@ -1,0 +1,137 @@
+# Forge installer for TelePresence (lwforge v0.4.1). Schema:
+# Locke-Werks/Forge docs/config-schema.md.
+#
+# The payload is target\windows\stage as packaging\windows\stage.ps1 lays it
+# out. product.version is a placeholder: package.ps1 and the release workflow
+# write a copy with the real version before forging.
+
+[product]
+name         = "TelePresence"
+version      = "0.0.0"
+publisher    = "Locke Werks"
+description  = "Camera and microphone over the LAN."
+copyright    = "Copyright (c) 2026 Locke Werks"
+url          = "https://github.com/Locke-Werks/telepresence"
+icon         = "../../assets/telepresence.ico"
+# Stable forever: upgrade detection keys off it. Changing it turns the next
+# release into a second product installed beside the first.
+upgrade_code = "118b0821-2e2d-4ae9-81c0-0ea6fcd3c800"
+aumid        = "LockeWerks.TelePresence"
+
+[install]
+scope     = "machine"
+# Frame Server loads tp-vcam.dll as LocalService, which cannot read a user
+# profile, so this has to be a machine-wide location.
+dir       = "{ProgramFiles}\\TelePresence"
+elevation = "required"
+
+[ui]
+license_text = """
+TelePresence
+Copyright (c) 2026 Locke Werks
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License version 3, as published by the Free
+Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details:
+https://www.gnu.org/licenses/gpl-3.0.html
+
+Audio: to hand received audio to other apps as a microphone, TelePresence plays
+it into VB-Cable, a free virtual audio device from VB-Audio. VB-Cable is not
+included. Install it from https://vb-audio.com/Cable/ ; without it, video still
+works and audio plays on the default output.
+
+Bundled third-party components: Qt 6 (LGPL v3) and GStreamer (LGPL v2.1 or
+later, some plugins under other licenses). License texts are installed in the
+licenses folder.
+"""
+
+[[options]]
+id      = "desktop_shortcut"
+label   = "Put a shortcut on the desktop"
+default = true
+
+[[preflight]]
+type = "os_build"
+# MFCreateVirtualCamera, which the virtual camera rests on, is Windows 11 only.
+min  = 22000
+fail = "TelePresence needs Windows 11."
+
+[[actions]]
+type   = "shortcut"
+target = "{InstallDir}\\telepresence.exe"
+name   = "TelePresence"
+
+[[actions]]
+type   = "shortcut"
+target = "{InstallDir}\\telepresence.exe"
+where  = "desktop"
+name   = "TelePresence"
+when   = "desktop_shortcut"
+
+[[actions]]
+type = "arp"
+
+# pre_install runs before any payload file is written, with only the hook's
+# own binary on disk. tp-setup-helper is statically linked for that reason;
+# telepresence.exe itself needs Qt and GStreamer beside it and cannot be used.
+
+[[hooks.pre_install]]
+id     = "stop_app"
+run    = "payload:tp-setup-helper.exe"
+args   = ["stop-app", "{InstallDir}"]
+sha256 = "auto"
+timeout_ms = 30000
+
+# Frame Server holds tp-vcam.dll loaded while the camera is registered, and a
+# loaded DLL cannot be replaced. Stopping it is what lets an upgrade swap it.
+[[hooks.pre_install]]
+id     = "stop_frameserver"
+run    = "payload:tp-setup-helper.exe"
+args   = ["stop-frameserver"]
+sha256 = "auto"
+timeout_ms = 60000
+
+[[hooks.post_install]]
+id     = "start_frameserver"
+run    = "payload:tp-setup-helper.exe"
+args   = ["start-frameserver"]
+sha256 = "auto"
+timeout_ms = 60000
+
+# Elevated, installer context: COM registration in HKLM plus
+# MFCreateVirtualCamera with system lifetime. Re-running it on an upgrade is
+# harmless; FrameServer identifies the camera by the same parameters.
+[[hooks.post_install]]
+id     = "register_camera"
+run    = "payload:VirtualCamera\\tp-vcam-register.exe"
+sha256 = "auto"
+timeout_ms = 60000
+
+[[hooks.pre_uninstall]]
+id     = "stop_app"
+run    = "payload:tp-setup-helper.exe"
+args   = ["stop-app", "{InstallDir}"]
+sha256 = "auto"
+timeout_ms = 30000
+
+# Exit 1 means the camera was already gone, which is the state we want.
+[[hooks.pre_uninstall]]
+id     = "unregister_camera"
+run    = "payload:VirtualCamera\\tp-vcam-register.exe"
+args   = ["--remove"]
+sha256 = "auto"
+expect_exit = [0, 1]
+timeout_ms = 60000
+
+# Unloads tp-vcam.dll so the uninstaller can delete it. Not restarted:
+# both services are demand-start and come back when an app opens a camera.
+[[hooks.pre_uninstall]]
+id     = "stop_frameserver"
+run    = "payload:tp-setup-helper.exe"
+args   = ["stop-frameserver"]
+sha256 = "auto"
+timeout_ms = 60000

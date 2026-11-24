@@ -56,7 +56,9 @@ ApplicationWindow {
         restore()
     }
 
+    // restore() runs before device lists arrive, so list may still be undefined.
     function indexOfValue(list, key, value) {
+        if (!list) return -1
         for (let i = 0; i < list.length; i++)
             if (list[i][key] === value) return i
         return -1
@@ -181,6 +183,65 @@ ApplicationWindow {
                     wrapMode: Text.Wrap
                 }
                 Button { text: "Refresh devices"; visible: win.isSender; onClicked: ctl.refreshDevices() }
+            }
+        }
+
+        // Update banner. Stays out of the way: no modal, nothing that takes
+        // focus, and an install waits for a live stream to end.
+        Rectangle {
+            id: updBanner
+            readonly property string st: ctl.updateState
+            Layout.fillWidth: true
+            visible: ["available", "downloading", "waiting", "applying", "manual", "error"].indexOf(st) >= 0
+                     && ctl.updateVersion !== ""
+            implicitHeight: updRow.implicitHeight + 16
+            color: "#1f2a3d"
+            border.color: st === "error" ? win.bad : win.accent
+            radius: 6
+            RowLayout {
+                id: updRow
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 10
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Label2 { text: "TelePresence " + ctl.updateVersion + " is available" }
+                    Caption {
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: ctl.updateMessage
+                        color: updBanner.st === "error" ? win.bad : win.dim
+                        wrapMode: Text.Wrap
+                    }
+                    ProgressBar {
+                        Layout.fillWidth: true
+                        visible: updBanner.st === "downloading"
+                        indeterminate: ctl.updateProgress < 0
+                        value: Math.max(0, ctl.updateProgress)
+                    }
+                }
+                Button {
+                    visible: updBanner.st === "available" || updBanner.st === "error"
+                    text: ctl.peer !== "" ? "Install when stream ends" : "Install"
+                    highlighted: true
+                    onClicked: ctl.installUpdate()
+                }
+                Button {
+                    visible: updBanner.st === "manual" && ctl.updateUrl !== ""
+                    text: "Release page"
+                    onClicked: Qt.openUrlExternally(ctl.updateUrl)
+                }
+                Button {
+                    visible: updBanner.st !== "downloading" && updBanner.st !== "applying"
+                    text: "Later"
+                    onClicked: ctl.laterUpdate()
+                }
+                Button {
+                    visible: updBanner.st === "available" || updBanner.st === "manual"
+                    text: "Skip this version"
+                    onClicked: ctl.skipUpdate()
+                }
             }
         }
 
@@ -370,6 +431,33 @@ ApplicationWindow {
                                 onToggled: win.changed("sender")
                             }
                             Button { text: "Refresh devices"; onClicked: ctl.refreshDevices() }
+                        }
+
+                        // Updates, shown under either role.
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 14
+                            spacing: 6
+                            Caption { text: "Updates" }
+                            CheckBox {
+                                text: "Check for updates automatically"
+                                checked: ctl.autoUpdateCheck
+                                palette.windowText: win.fg
+                                onToggled: ctl.setAutoUpdate(checked)
+                            }
+                            Button {
+                                text: "Check for updates"
+                                enabled: ["checking", "downloading", "waiting", "applying"].indexOf(ctl.updateState) < 0
+                                onClicked: ctl.checkForUpdates()
+                            }
+                            Caption {
+                                Layout.fillWidth: true
+                                visible: ["checking", "uptodate", "notice"].indexOf(ctl.updateState) >= 0
+                                         || (ctl.updateState === "error" && ctl.updateVersion === "")
+                                text: ctl.updateMessage
+                                color: ctl.updateState === "error" ? win.bad : win.dim
+                                wrapMode: Text.Wrap
+                            }
                         }
                     }
                 }

@@ -30,7 +30,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
 anyhow = "1"
-cxx = { version = "1.0.205", optional = true }
+# Updater. reqwest carries no crypto provider of its own so ring, already
+# linked through tp-proto, is the only one; no OpenSSL anywhere.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+semver = "1"
+sha2 = "0.10"
+cxx ={ version = "1.0.205", optional = true }
 cxx-qt = { version = "0.10.0", optional = true }
 cxx-qt-lib = { version = "0.10.0", features = ["qt_gui", "qt_qml", "qt_quickcontrols"], optional = true }
 

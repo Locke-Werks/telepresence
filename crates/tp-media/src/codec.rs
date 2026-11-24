@@ -1,4 +1,3 @@
-use gst::prelude::*;
 
 use crate::util::{make, try_set};
 

@@ -1,6 +1,11 @@
 //! `telepresence`: the TelePresence sender/receiver. With no subcommand it
 //! opens the Qt Quick window (when built with the `gui` feature).
 
+// Release builds are GUI-subsystem so launching from Explorer or the Start
+// menu does not flash a console. The CLI reattaches to the caller's console
+// in `windows_setup`.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -76,7 +81,116 @@ fn init_logging() {
     tracing_subscriber::fmt().with_env_filter(filter).with_target(false).init();
 }
 
+/// Console and GStreamer setup for the installed Windows build. Runs before
+/// anything else so no thread exists yet when the environment is written.
+#[cfg(windows)]
+fn windows_setup() {
+    use std::ffi::c_void;
+    unsafe extern "system" {
+        fn GetStdHandle(n: u32) -> *mut c_void;
+        fn AttachConsole(pid: u32) -> i32;
+    }
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+
+    // A GUI-subsystem exe starts with no console. With arguments it is being
+    // used as a CLI, so borrow the terminal it was started from. Skipped when
+    // stdout is already a pipe or file, which redirected output keeps.
+    if std::env::args_os().len() > 1 {
+        let out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if out.is_null() || out as isize == -1 {
+            unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+        }
+    }
+
+    // The installer ships GStreamer beside the exe. Point the registry and
+    // plugin search at that copy only, so a system-wide GStreamer (or none)
+    // cannot change which plugins load. Dev builds have no bundle and keep
+    // the system install.
+    let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
+        return;
+    };
+    let plugins = dir.join("gstreamer-1.0");
+    if !plugins.is_dir() {
+        return;
+    }
+    // SAFETY: single-threaded at this point; nothing else reads the env yet.
+    unsafe {
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins);
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", &plugins);
+        std::env::remove_var("GST_PLUGIN_PATH_1_0");
+        std::env::remove_var("GST_PLUGIN_PATH");
+        let scanner = dir.join("gst-plugin-scanner.exe");
+        if scanner.is_file() {
+            std::env::set_var("GST_PLUGIN_SCANNER_1_0", &scanner);
+            std::env::set_var("GST_PLUGIN_SCANNER", &scanner);
+        }
+        // Own registry file: the default one is shared with any system
+        // GStreamer and would be rewritten back and forth between the two.
+        if std::env::var_os("GST_REGISTRY_1_0").is_none()
+            && let Some(cache) = dirs::cache_dir()
+        {
+            let reg = cache.join("TelePresence").join("gstreamer-registry.bin");
+            let _ = std::fs::create_dir_all(reg.parent().unwrap());
+            std::env::set_var("GST_REGISTRY_1_0", reg);
+        }
+    }
+}
+
+/// GStreamer setup for TelePresence.app. The bundle carries its own GStreamer
+/// (Contents/Frameworks, Contents/PlugIns/gstreamer); point plugin discovery at
+/// that copy only, so a Homebrew or framework install on the machine cannot
+/// change which plugins load. Runs before any thread exists. `cargo run`
+/// builds have no bundle and keep the system install.
+#[cfg(target_os = "macos")]
+fn macos_setup() {
+    let Some(macos_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) else {
+        return;
+    };
+    let Some(contents) = macos_dir.parent() else { return };
+    let plugins = contents.join("PlugIns").join("gstreamer");
+    if !plugins.is_dir() {
+        return;
+    }
+    // SAFETY: single-threaded at this point; nothing else reads the env yet.
+    unsafe {
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins);
+        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", &plugins);
+        std::env::remove_var("GST_PLUGIN_PATH_1_0");
+        std::env::remove_var("GST_PLUGIN_PATH");
+        let scanner = macos_dir.join("gst-plugin-scanner");
+        std::env::set_var("GST_PLUGIN_SCANNER_1_0", &scanner);
+        std::env::set_var("GST_PLUGIN_SCANNER", &scanner);
+        // No GIO modules are bundled. Pointing GIO at an empty path stops it
+        // loading a system copy built against a different glib.
+        std::env::set_var("GIO_MODULE_DIR", contents.join("Frameworks").join("gio-modules"));
+        std::env::set_var("GIO_USE_VFS", "local");
+        // The hardened runtime refuses ORC's writable+executable mappings
+        // (no allow-jit entitlement, on purpose). ORC then falls back to its
+        // C paths anyway; asking for them up front skips the failed attempt
+        // and the error it prints for every pipeline.
+        if std::env::var_os("ORC_CODE").is_none() {
+            std::env::set_var("ORC_CODE", "backup");
+        }
+        // Own registry file: the default one is shared with any other
+        // GStreamer on the machine and would be rewritten back and forth.
+        if std::env::var_os("GST_REGISTRY_1_0").is_none()
+            && let Some(cache) = dirs::cache_dir()
+        {
+            let reg = cache
+                .join("com.lockewerks.telepresence")
+                .join(format!("gstreamer-registry-{}.bin", std::env::consts::ARCH));
+            let _ = std::fs::create_dir_all(reg.parent().unwrap());
+            std::env::set_var("GST_REGISTRY_1_0", reg);
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    #[cfg(windows)]
+    windows_setup();
+    #[cfg(target_os = "macos")]
+    macos_setup();
     let cli = Cli::parse();
     init_logging();
     let config_dir = cli.config_dir.unwrap_or_else(tp_app::store::config_dir);

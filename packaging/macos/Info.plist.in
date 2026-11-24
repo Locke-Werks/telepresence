@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>TelePresence</string>
+	<key>CFBundleExecutable</key>
+	<string>telepresence</string>
+	<key>CFBundleIconFile</key>
+	<string>telepresence</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.lockewerks.telepresence</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>TelePresence</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.video</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright Locke Werks. Licensed under GPLv3.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>TelePresence streams your camera to the computer you pair it with.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>TelePresence streams your microphone to the computer you pair it with.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>TelePresence finds and connects to paired computers on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_telepresence._udp</string>
+	</array>
+</dict>
+</plist>
