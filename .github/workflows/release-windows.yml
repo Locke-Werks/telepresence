@@ -109,6 +109,18 @@ jobs:
           endpoint: https://eus.codesigning.azure.net
           trusted-signing-account-name: specterpoint
           certificate-profile-name: specterpoint
+          # Environment credential only, as signing/metadata.json does
+          # locally: left open, the chain picks up another identity on the
+          # runner and the service answers 403.
+          exclude-managed-identity-credential: true
+          exclude-workload-identity-credential: true
+          exclude-azure-cli-credential: true
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
           files-folder: target/windows/own
           files-folder-filter: exe,dll
           files-folder-recurse: true
@@ -170,6 +182,18 @@ jobs:
           endpoint: https://eus.codesigning.azure.net
           trusted-signing-account-name: specterpoint
           certificate-profile-name: specterpoint
+          # Environment credential only, as signing/metadata.json does
+          # locally: left open, the chain picks up another identity on the
+          # runner and the service answers 403.
+          exclude-managed-identity-credential: true
+          exclude-workload-identity-credential: true
+          exclude-azure-cli-credential: true
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
           files-folder: dist
           files-folder-filter: exe
           file-digest: SHA256
