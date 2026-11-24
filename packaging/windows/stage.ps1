@@ -61,8 +61,11 @@ Write-Host "GStreamer: $GstRoot"
 Write-Host "VS:        $VsRoot"
 
 function Invoke-CMakeProject([string]$Source, [string]$Build) {
-    # The VS generator finds MSVC itself, so no developer prompt is needed.
-    cmake -S $Source -B $Build -G 'Visual Studio 17 2022' -A x64 | Out-Host
+    # No -G: CMake defaults to the newest Visual Studio installed, which
+    # finds MSVC itself, so no developer prompt is needed. Naming a version
+    # broke when the runner image moved past VS 2022.
+    cmake -S $Source -B $Build -A x64 | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "cmake configure failed for $Source" }
     cmake --build $Build --config Release --parallel | Out-Host
 }
 
