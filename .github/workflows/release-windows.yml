@@ -79,7 +79,10 @@ jobs:
           $dir = 'C:\gstreamer'
           foreach ($msi in "gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.msi", "gstreamer-1.0-devel-msvc-x86_64-$env:GST_VERSION.msi") {
             Invoke-WebRequest "$base/$msi" -OutFile "$env:RUNNER_TEMP\$msi"
-            $sum = ((Invoke-WebRequest "$base/$msi.sha256sum").Content -split '\s+')[0]
+            # The server labels .sha256sum as application/x-msi, so .Content
+            # comes back as bytes; read it from disk as text instead.
+            Invoke-WebRequest "$base/$msi.sha256sum" -OutFile "$env:RUNNER_TEMP\$msi.sha256sum"
+            $sum = ((Get-Content -Raw "$env:RUNNER_TEMP\$msi.sha256sum").Trim() -split '\s+')[0]
             $got = (Get-FileHash "$env:RUNNER_TEMP\$msi" -Algorithm SHA256).Hash
             if ($got -ne $sum.ToUpperInvariant()) { throw "$msi checksum mismatch" }
             # ADDLOCAL=ALL: the default feature set leaves out plugins the app uses.
