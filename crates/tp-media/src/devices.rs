@@ -27,10 +27,13 @@ impl DeviceInfo {
             // against one that leaves the element on "default". Only an
             // empty value is filled in, since id formats differ per provider.
             for prop in ["unique-id", "device"] {
-                if el
-                    .find_property(prop)
-                    .is_some_and(|p| p.value_type() == String::static_type())
-                {
+                // osxaudiosrc publishes unique-id read-only; writing it raises
+                // a "not writable" critical, so only touch writable strings.
+                if el.find_property(prop).is_some_and(|p| {
+                    p.value_type() == String::static_type()
+                        && p.flags().contains(gst::glib::ParamFlags::WRITABLE)
+                        && !p.flags().contains(gst::glib::ParamFlags::CONSTRUCT_ONLY)
+                }) {
                     let cur: Option<String> = el.property(prop);
                     if cur
                         .as_deref()
