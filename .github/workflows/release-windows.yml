@@ -29,7 +29,7 @@ env:
   # v0.4.0+ is required for pre_install hooks; v0.3.0+ for options/when.
   FORGE_VERSION: v0.4.1
   GST_VERSION: 1.26.10
-  QT_VERSION: 6.11.*
+  QT_VERSION: 6.11.3
 
 jobs:
   windows:
@@ -66,6 +66,9 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
+          # aqt 3.3.0 predates the per-arch Windows repo layout Qt uses from
+          # 6.11; this master commit carries the fix until a release ships it.
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@4c759852b1108cc801d8e24979136b895b5155d4
           modules: qtmultimedia
           cache: true
 
